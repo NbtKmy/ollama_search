@@ -1,0 +1,14 @@
+[project]
+name = "test-claude"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "playwright>=1.40.0",
+    "pydantic>=2.0.0",
+    "ollama>=0.4.0",
+    "httpx>=0.28.1",
+    "beautifulsoup4>=4.14.2",
+    "gradio>=5.49.1",
+]
