@@ -13,6 +13,8 @@ from pathlib import Path
 
 from smart_search_agent import SmartSearchAgent
 from search_agent import SearchReport
+from pdf_processor import PDFProcessor
+from llm_agent import LLMAgent
 
 
 class SearchApp:
@@ -21,6 +23,8 @@ class SearchApp:
     def __init__(self, model: str = "gpt-oss:20b"):
         self.agent = SmartSearchAgent(llm_model=model, headless=True)
         self.model = model
+        self.pdf_processor = PDFProcessor()
+        self.llm_agent = LLMAgent(model=model)
 
     def quick_answer_with_sources(self, question: str, progress=gr.Progress()):
         """
@@ -183,6 +187,117 @@ class SearchApp:
             print(f"エラー詳細:\n{error_detail}")
             return f"❌ Fehler: {str(e)}", f"<pre style='color: red;'>{error_detail}</pre>", ""
 
+    def summarize_pdf_file(self, pdf_file, chunk_size: int, detail_level: str, progress=gr.Progress()):
+        """
+        Summarize a PDF file.
+
+        Args:
+            pdf_file: Uploaded PDF file
+            chunk_size: Target words per chunk
+            detail_level: Detail level (1=brief, 2=medium, 3=detailed)
+
+        Returns:
+            Tuple of (overall_summary, chunk_summaries_html, metadata_text)
+        """
+        if pdf_file is None:
+            return "Bitte laden Sie eine PDF-Datei hoch.", "", ""
+
+        try:
+            # Map detail level slider to text
+            detail_map = {1: "brief", 2: "medium", 3: "detailed"}
+            detail_text = detail_map.get(detail_level, "medium")
+
+            progress(0, desc="📄 PDF wird verarbeitet...")
+
+            # Update processor chunk size
+            self.pdf_processor.chunk_size = chunk_size
+
+            # Extract text and structure
+            doc = self.pdf_processor.extract_text(pdf_file.name)
+
+            progress(0.2, desc="📊 Dokument wird analysiert...")
+
+            # Determine chunking strategy
+            strategy = self.pdf_processor.get_chunking_strategy(doc)
+
+            # Chunk the document
+            if strategy == 'structure':
+                chunks = self.pdf_processor.chunk_by_structure(doc)
+                strategy_text = "Strukturbasiert (Kapitel/Abschnitte erkannt)"
+            else:
+                chunks = self.pdf_processor.chunk_by_size(doc)
+                strategy_text = "Größenbasiert (feste Chunk-Größe)"
+
+            progress(0.3, desc=f"✂️ In {len(chunks)} Chunks aufgeteilt...")
+
+            # Summarize using LLM
+            result = self.llm_agent.summarize_pdf(
+                chunks=chunks,
+                strategy=strategy,
+                detail_level=detail_text
+            )
+
+            progress(0.9, desc="✨ Ergebnisse werden formatiert...")
+
+            # Build overall summary text
+            overall_text = f"**Gesamtzusammenfassung:**\n\n{result.overall_summary}\n\n"
+            overall_text += "**Wichtigste Erkenntnisse:**\n"
+            for i, takeaway in enumerate(result.key_takeaways, 1):
+                overall_text += f"{i}. {takeaway}\n"
+
+            # Build chunk summaries HTML
+            chunk_html = "<div style='margin-top: 20px;'>"
+            chunk_html += f"<h3>📑 Abschnittszusammenfassungen ({len(result.chunk_summaries)} Abschnitte)</h3>"
+
+            for chunk_summary in result.chunk_summaries:
+                section_title = chunk_summary.section_title or f"Abschnitt {chunk_summary.chunk_index + 1}"
+
+                chunk_html += f"""
+                <div style='margin: 15px 0; padding: 15px; border: 1px solid #ddd; border-radius: 8px; background-color: #f9f9f9;'>
+                    <div style='font-weight: bold; font-size: 1.1em; color: #1a73e8; margin-bottom: 10px;'>
+                        {section_title}
+                    </div>
+                    <div style='font-size: 0.95em; color: #333; margin-bottom: 10px;'>
+                        {chunk_summary.summary}
+                    </div>
+                """
+
+                if chunk_summary.key_points:
+                    chunk_html += "<div style='font-size: 0.9em; color: #555;'><strong>Wichtige Punkte:</strong><ul style='margin: 5px 0;'>"
+                    for point in chunk_summary.key_points:
+                        chunk_html += f"<li>{point}</li>"
+                    chunk_html += "</ul></div>"
+
+                chunk_html += "</div>"
+
+            chunk_html += "</div>"
+
+            # Build metadata text
+            metadata_text = f"""**Dokument-Informationen:**
+
+- **Seiten:** {doc.num_pages}
+- **Chunks:** {result.total_chunks}
+- **Strategie:** {strategy_text}
+- **Detailstufe:** {detail_text}
+- **Struktur erkannt:** {'Ja' if doc.has_structure else 'Nein'}
+"""
+
+            if doc.metadata:
+                metadata_text += "\n**PDF-Metadaten:**\n"
+                for key, value in doc.metadata.items():
+                    if value:
+                        metadata_text += f"- **{key}:** {value}\n"
+
+            progress(1.0, desc="✅ 完了!")
+
+            return overall_text, chunk_html, metadata_text
+
+        except Exception as e:
+            import traceback
+            error_detail = traceback.format_exc()
+            print(f"エラー詳細:\n{error_detail}")
+            return f"❌ Fehler: {str(e)}", f"<pre style='color: red;'>{error_detail}</pre>", ""
+
 
 def create_ui():
     """Create Gradio UI."""
@@ -290,7 +405,59 @@ def create_ui():
                     inputs=[intent_input]
                 )
 
-            # Tab 3: Info
+            # Tab 3: PDF Summarization
+            with gr.Tab("📄 PDF Zusammenfassung"):
+                gr.Markdown(
+                    """
+                    ### PDF-Dokumente zusammenfassen
+                    Laden Sie eine PDF-Datei hoch und erhalten Sie eine intelligente Zusammenfassung.
+                    Das System erkennt automatisch die Struktur (Kapitel, Abschnitte) und passt die Verarbeitung an.
+                    """
+                )
+
+                with gr.Row():
+                    with gr.Column(scale=2):
+                        pdf_upload = gr.File(
+                            label="PDF-Datei hochladen",
+                            file_types=[".pdf"],
+                            type="filepath"
+                        )
+
+                        with gr.Row():
+                            chunk_size_slider = gr.Slider(
+                                minimum=500,
+                                maximum=3000,
+                                value=1000,
+                                step=100,
+                                label="Chunk-Größe (Wörter)",
+                                info="Größere Chunks = weniger Chunks, aber längere Verarbeitungszeit pro Chunk"
+                            )
+                            detail_slider = gr.Slider(
+                                minimum=1,
+                                maximum=3,
+                                value=2,
+                                step=1,
+                                label="Detailstufe",
+                                info="1=Kurz, 2=Medium, 3=Detailliert"
+                            )
+
+                        summarize_button = gr.Button("📊 PDF Zusammenfassen", variant="primary", size="lg")
+
+                    with gr.Column(scale=1):
+                        metadata_output = gr.Markdown(label="Dokument-Info")
+
+                gr.Markdown("---")
+
+                overall_summary_output = gr.Markdown(label="Gesamtzusammenfassung")
+                chunk_summaries_output = gr.HTML(label="Abschnittszusammenfassungen")
+
+                summarize_button.click(
+                    fn=app.summarize_pdf_file,
+                    inputs=[pdf_upload, chunk_size_slider, detail_slider],
+                    outputs=[overall_summary_output, chunk_summaries_output, metadata_output]
+                )
+
+            # Tab 4: Info
             with gr.Tab("ℹ️ Info"):
                 gr.Markdown(
                     """
@@ -298,12 +465,14 @@ def create_ui():
 
                     Diese App kombiniert:
                     - **Web-Suche**: DuckDuckGo Lite API für aktuelle Informationen
+                    - **PDF-Verarbeitung**: Intelligente Dokumentenzusammenfassung
                     - **KI-Modell**: gpt-oss:20b via Ollama für intelligente Verarbeitung
                     - **Smart Features**:
                         - Automatische Query-Generierung
                         - Relevanz-Bewertung der Ergebnisse
                         - KI-gestützte Zusammenfassungen
                         - Quellenangaben mit Links
+                        - Hierarchische PDF-Analyse
 
                     ### Verwendung
 
@@ -317,10 +486,17 @@ def create_ui():
                     - Bewertet und rankt Ergebnisse nach Relevanz
                     - Detailliertere Informationen
 
+                    **PDF Zusammenfassung:**
+                    - Lädt PDF-Dateien hoch und fasst sie zusammen
+                    - Erkennt automatisch Dokumentstruktur (Kapitel, Abschnitte)
+                    - Anpassbare Chunk-Größe und Detailstufe
+                    - Zeigt Gesamt- und Abschnittszusammenfassungen
+
                     ### Technologie-Stack
                     - Python 3.11+
                     - Gradio für UI
                     - httpx + BeautifulSoup4 für Web-Suche
+                    - pdfplumber für PDF-Verarbeitung
                     - Ollama für LLM
                     - Pydantic für Datenvalidierung
                     """

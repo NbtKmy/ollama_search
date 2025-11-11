@@ -37,6 +37,23 @@ class SearchSummary(BaseModel):
     result_count: int
 
 
+class ChunkSummary(BaseModel):
+    """Summary of a document chunk."""
+    chunk_index: int
+    section_title: Optional[str]
+    summary: str
+    key_points: List[str]
+
+
+class PDFSummaryResult(BaseModel):
+    """Complete PDF summarization result."""
+    overall_summary: str
+    key_takeaways: List[str]
+    chunk_summaries: List[ChunkSummary]
+    strategy_used: str  # 'structure' or 'size'
+    total_chunks: int
+
+
 class LLMAgent:
     """Agent using Ollama LLM for intelligent search operations."""
 
@@ -253,6 +270,190 @@ Antworte im folgenden JSON-Format mit einem Array von Bewertungen:
                 )
                 for result in results[:top_k]
             ]
+
+    def summarize_chunk(self, chunk_text: str, chunk_index: int,
+                       section_title: Optional[str] = None,
+                       detail_level: str = "medium") -> ChunkSummary:
+        """
+        Summarize a single chunk of text.
+
+        Args:
+            chunk_text: Text content to summarize
+            chunk_index: Index of this chunk
+            section_title: Optional title of the section this chunk belongs to
+            detail_level: Level of detail ('brief', 'medium', 'detailed')
+
+        Returns:
+            ChunkSummary with summary and key points
+        """
+        # Adjust prompt based on detail level
+        if detail_level == "brief":
+            length_instruction = "1-2 Sätze"
+            num_points = 2
+        elif detail_level == "detailed":
+            length_instruction = "4-5 Sätze"
+            num_points = 5
+        else:  # medium
+            length_instruction = "2-3 Sätze"
+            num_points = 3
+
+        system_prompt = """Du bist ein Experte für das Zusammenfassen von Dokumenten.
+Erstelle prägnante, informative Zusammenfassungen, die die wichtigsten Informationen erfassen."""
+
+        section_info = f"\nAbschnitt: {section_title}" if section_title else ""
+
+        prompt = f"""Fasse den folgenden Textabschnitt zusammen:{section_info}
+
+Text:
+{chunk_text[:3000]}
+
+Erstelle eine Zusammenfassung mit {length_instruction} und {num_points} wichtigen Punkten.
+Antworte im folgenden JSON-Format:
+{{
+    "summary": "Eine prägnante Zusammenfassung ({length_instruction})",
+    "key_points": [
+        "Wichtiger Punkt 1",
+        "Wichtiger Punkt 2"
+    ]
+}}"""
+
+        response = self._chat(prompt, system_prompt)
+
+        try:
+            # Extract JSON from response
+            start_idx = response.find('{')
+            end_idx = response.rfind('}') + 1
+            json_str = response[start_idx:end_idx]
+            data = json.loads(json_str)
+
+            return ChunkSummary(
+                chunk_index=chunk_index,
+                section_title=section_title,
+                summary=data.get("summary", ""),
+                key_points=data.get("key_points", [])
+            )
+        except Exception as e:
+            print(f"Error parsing chunk summary: {e}")
+            return ChunkSummary(
+                chunk_index=chunk_index,
+                section_title=section_title,
+                summary="Fehler beim Erstellen der Zusammenfassung",
+                key_points=[]
+            )
+
+    def create_overall_summary(self, chunk_summaries: List[ChunkSummary],
+                             detail_level: str = "medium") -> tuple[str, List[str]]:
+        """
+        Create an overall summary from chunk summaries.
+
+        Args:
+            chunk_summaries: List of chunk summaries to combine
+            detail_level: Level of detail for final summary
+
+        Returns:
+            Tuple of (overall_summary, key_takeaways)
+        """
+        if detail_level == "brief":
+            length_instruction = "2-3 Sätze"
+            num_takeaways = 3
+        elif detail_level == "detailed":
+            length_instruction = "Ein ausführlicher Absatz (6-8 Sätze)"
+            num_takeaways = 8
+        else:  # medium
+            length_instruction = "4-5 Sätze"
+            num_takeaways = 5
+
+        system_prompt = """Du bist ein Experte für das Zusammenfassen von Dokumenten.
+Erstelle eine kohärente Gesamtzusammenfassung aus mehreren Teilzusammenfassungen."""
+
+        # Build combined text from all chunk summaries
+        combined_text = ""
+        for i, chunk_summary in enumerate(chunk_summaries, 1):
+            section_label = f" ({chunk_summary.section_title})" if chunk_summary.section_title else ""
+            combined_text += f"\n\nAbschnitt {i}{section_label}:\n"
+            combined_text += f"{chunk_summary.summary}\n"
+            if chunk_summary.key_points:
+                combined_text += "Wichtige Punkte:\n"
+                for point in chunk_summary.key_points:
+                    combined_text += f"  - {point}\n"
+
+        prompt = f"""Basierend auf diesen Teilzusammenfassungen eines Dokuments:
+
+{combined_text[:5000]}
+
+Erstelle eine Gesamtzusammenfassung des gesamten Dokuments mit:
+- Einer kohärenten Zusammenfassung ({length_instruction})
+- {num_takeaways} wichtigsten Erkenntnissen aus dem gesamten Dokument
+
+Antworte im folgenden JSON-Format:
+{{
+    "overall_summary": "Eine kohärente Gesamtzusammenfassung ({length_instruction})",
+    "key_takeaways": [
+        "Wichtigste Erkenntnis 1",
+        "Wichtigste Erkenntnis 2"
+    ]
+}}"""
+
+        response = self._chat(prompt, system_prompt)
+
+        try:
+            # Extract JSON from response
+            start_idx = response.find('{')
+            end_idx = response.rfind('}') + 1
+            json_str = response[start_idx:end_idx]
+            data = json.loads(json_str)
+
+            return (
+                data.get("overall_summary", ""),
+                data.get("key_takeaways", [])
+            )
+        except Exception as e:
+            print(f"Error parsing overall summary: {e}")
+            return (
+                "Fehler beim Erstellen der Gesamtzusammenfassung",
+                []
+            )
+
+    def summarize_pdf(self, chunks: List, strategy: str = "size",
+                     detail_level: str = "medium") -> PDFSummaryResult:
+        """
+        Summarize a PDF document using hybrid strategy.
+
+        Args:
+            chunks: List of PDFChunk objects from pdf_processor
+            strategy: Chunking strategy used ('structure' or 'size')
+            detail_level: Level of detail ('brief', 'medium', 'detailed')
+
+        Returns:
+            PDFSummaryResult with complete summarization
+        """
+        print(f"Summarizing {len(chunks)} chunks with {strategy} strategy and {detail_level} detail level...")
+
+        # Step 1: Summarize each chunk
+        chunk_summaries = []
+        for i, chunk in enumerate(chunks):
+            print(f"  Summarizing chunk {i+1}/{len(chunks)}...")
+            chunk_summary = self.summarize_chunk(
+                chunk_text=chunk.content,
+                chunk_index=i,
+                section_title=chunk.section_title,
+                detail_level=detail_level
+            )
+            chunk_summaries.append(chunk_summary)
+
+        # Step 2: Create overall summary from chunk summaries
+        print("  Creating overall summary...")
+        overall_summary, key_takeaways = self.create_overall_summary(
+            chunk_summaries, detail_level
+        )
+
+        return PDFSummaryResult(
+            overall_summary=overall_summary,
+            key_takeaways=key_takeaways,
+            chunk_summaries=chunk_summaries,
+            strategy_used=strategy,
+            total_chunks=len(chunks)
+        )
 
 
 async def main():

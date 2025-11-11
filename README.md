@@ -5,6 +5,7 @@ KI-gestützter Search Agent mit Web-UI, der DuckDuckGo-Suche mit Ollama LLM (gpt
 ## ✨ Features
 
 - 🌐 **Web-Suche**: DuckDuckGo Lite API (schnell & zuverlässig)
+- 📄 **PDF-Zusammenfassung**: Intelligente Dokumentenanalyse mit Strukturerkennung
 - 🤖 **KI-Integration**: Ollama gpt-oss:20b für intelligente Verarbeitung
 - 📊 **Quellenangaben**: Alle Antworten mit Referenzen und Links
 - 🎯 **Relevanz-Ranking**: Automatische Bewertung der Suchergebnisse
@@ -19,7 +20,7 @@ ollama serve
 ollama pull gpt-oss:20b
 
 # Dependencies installieren
-uv add gradio httpx beautifulsoup4 ollama pydantic
+uv add gradio httpx beautifulsoup4 ollama pydantic pdfplumber
 
 # Web UI starten
 uv run python app.py
@@ -31,17 +32,23 @@ uv run python app.py
 
 ### Gradio Web UI (Empfohlen)
 
-**Zwei Modi verfügbar:**
+**Drei Modi verfügbar:**
 
 1. **💬 Schnelle Antwort**
    - Direkte Fragen stellen
    - AI-generierte Antwort
    - Top-5 Quellen mit Links
-   
+
 2. **🚀 Erweiterte Suche**
    - Multi-Query Generation
    - Relevanz-Ranking (0-100%)
    - Detaillierte Begründungen
+
+3. **📄 PDF Zusammenfassung**
+   - PDF-Dateien hochladen
+   - Automatische Strukturerkennung (Kapitel/Abschnitte)
+   - Hierarchische Zusammenfassung
+   - Anpassbare Chunk-Größe & Detailstufe
 
 ### CLI Commands
 
@@ -86,6 +93,7 @@ test_claude/
 ├── smart_search_agent.py     # 🧠 Smart Agent
 ├── search_agent.py           # 🔍 Web Search
 ├── llm_agent.py             # 🤖 LLM Integration
+├── pdf_processor.py         # 📄 PDF Processing
 └── output/                  # 💾 Saved Results
 ```
 
